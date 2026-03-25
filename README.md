@@ -29,9 +29,12 @@
         .form-group label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; color: var(--text-muted); }
         .val-display { color: #fff; }
         input[type="range"] { width: 100%; cursor: pointer; accent-color: var(--primary); }
-        select, input[type="file"] { width: 100%; padding: 8px; background: var(--bg-dark); color: #fff; border: 1px solid var(--border); border-radius: 4px; outline: none; }
+        select, input[type="file"], input[type="number"] { width: 100%; padding: 8px; background: var(--bg-dark); color: #fff; border: 1px solid var(--border); border-radius: 4px; outline: none; }
         .checkbox-group { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-muted); }
         
+        .flex-row { display: flex; gap: 10px; }
+        .flex-row > div { flex: 1; }
+
         /* Buttons */
         .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
         button { padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: 0.2s; }
@@ -66,15 +69,30 @@
         </div>
 
         <div class="section">
-            <div class="section-title">Pattern Settings</div>
+            <div class="section-title">Pattern Area & Layout</div>
             <div class="form-group">
-                <label>Shape</label>
+                <label>Draw Pattern In</label>
+                <select id="patternArea">
+                    <option value="all">Entire Page (كامل الصفحة)</option>
+                    <option value="inside">Inside Image Only (داخل الصورة)</option>
+                    <option value="outside">Background Only (خارج الصورة)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="checkbox-group"><input type="checkbox" id="ignoreWhite" checked> Treat White as Background</label>
+            </div>
+            <div class="form-group" style="margin-top: 15px;">
+                <label>Shape Type</label>
                 <select id="shapeType">
                     <option value="circle">Circles</option>
                     <option value="square">Squares</option>
                     <option value="hexagon">Hexagons</option>
                 </select>
             </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Size & Spacing</div>
             <div class="form-group">
                 <label>Spacing (mm) <span class="val-display" id="valSpacing">5</span></label>
                 <input type="range" id="spacing" min="1" max="20" step="0.5" value="5">
@@ -113,8 +131,21 @@
                 <select id="pageSize">
                     <option value="A4">A4 (210 x 297 mm)</option>
                     <option value="A3">A3 (297 x 420 mm)</option>
+                    <option value="Custom">Custom Size...</option>
                 </select>
             </div>
+            
+            <div class="form-group flex-row" id="customSizeGroup" style="display: none;">
+                <div>
+                    <label>Width (mm)</label>
+                    <input type="number" id="customW" value="150" min="10">
+                </div>
+                <div>
+                    <label>Height (mm)</label>
+                    <input type="number" id="customH" value="150" min="10">
+                </div>
+            </div>
+
             <div class="form-group">
                 <label>Margin (mm) <span class="val-display" id="valMargin">10</span></label>
                 <input type="range" id="margin" min="0" max="50" step="1" value="10">
@@ -149,9 +180,8 @@
         // --- State ---
         let originalImage = null;
         let imgData = null;
-        let sampleWidth = 800; // Internal resolution for sampling pixels
+        let sampleWidth = 800;
         
-        // Pan & Zoom State
         let zoom = 1;
         let panX = 0; let panY = 0;
         let isDragging = false;
@@ -162,8 +192,9 @@
         const previewCanvas = document.getElementById('previewCanvas');
         const ctx = previewCanvas.getContext('2d');
         const previewArea = document.getElementById('previewArea');
+        const customSizeGroup = document.getElementById('customSizeGroup');
 
-        // Page Sizes in mm
+        // Page Sizes
         const pages = {
             'A4': { w: 210, h: 297 },
             'A3': { w: 297, h: 420 }
@@ -177,14 +208,23 @@
                 valEl.innerText = el.value;
                 if(originalImage) process();
             });
-        };
-        ['spacing', 'maxSize', 'threshold', 'imgScale', 'margin'].forEach(id => {
+        };['spacing', 'maxSize', 'threshold', 'imgScale', 'margin'].forEach(id => {
             bindSlider(id, 'val' + id.charAt(0).toUpperCase() + id.slice(1));
         });
 
         document.querySelectorAll('select, input[type="checkbox"]').forEach(el => {
-            el.addEventListener('change', () => { if(originalImage) process(); });
+            el.addEventListener('change', (e) => { 
+                if(e.target.id === 'pageSize') {
+                    customSizeGroup.style.display = e.target.value === 'Custom' ? 'flex' : 'none';
+                    if(originalImage) { process(); resetView(); }
+                } else {
+                    if(originalImage) process(); 
+                }
+            });
         });
+
+        document.getElementById('customW').addEventListener('input', () => { if(originalImage) {process(); resetView();} });
+        document.getElementById('customH').addEventListener('input', () => { if(originalImage) {process(); resetView();} });
 
         // --- Image Upload ---
         document.getElementById('imageInput').addEventListener('change', function(e) {
@@ -205,16 +245,26 @@
 
         // --- Core Processing Logic ---
         function getParams() {
-            const page = pages[document.getElementById('pageSize').value];
+            let pageW, pageH;
+            if (document.getElementById('pageSize').value === 'Custom') {
+                pageW = parseFloat(document.getElementById('customW').value) || 100;
+                pageH = parseFloat(document.getElementById('customH').value) || 100;
+            } else {
+                const page = pages[document.getElementById('pageSize').value];
+                pageW = page.w;
+                pageH = page.h;
+            }
+
             return {
-                pageW: page.w,
-                pageH: page.h,
+                pageW, pageH,
                 margin: parseFloat(document.getElementById('margin').value),
                 spacing: parseFloat(document.getElementById('spacing').value),
                 maxSize: parseFloat(document.getElementById('maxSize').value),
                 fixedSize: document.getElementById('fixedSize').checked,
                 outlineOnly: document.getElementById('outlineOnly').checked,
                 shape: document.getElementById('shapeType').value,
+                patternArea: document.getElementById('patternArea').value,
+                ignoreWhite: document.getElementById('ignoreWhite').checked,
                 threshold: parseInt(document.getElementById('threshold').value),
                 invert: document.getElementById('invert').checked,
                 imgScale: parseInt(document.getElementById('imgScale').value) / 100,
@@ -222,7 +272,6 @@
             };
         }
 
-        // Sampling Image to offscreen canvas
         function sampleImage(p) {
             if(!originalImage) return;
             const drawW = p.pageW - (p.margin * 2);
@@ -233,10 +282,9 @@
             offCanvas.height = sampleWidth * (drawH / drawW);
             const oCtx = offCanvas.getContext('2d', { willReadFrequently: true });
 
-            oCtx.fillStyle = p.invert ? 'black' : 'white';
-            oCtx.fillRect(0, 0, offCanvas.width, offCanvas.height);
+            // Clear to transparent (Do not fill solid, so we can detect background)
+            oCtx.clearRect(0, 0, offCanvas.width, offCanvas.height);
 
-            // Center and scale image (Crop logic)
             const imgAspect = originalImage.width / originalImage.height;
             const canvasAspect = offCanvas.width / offCanvas.height;
             let dw, dh;
@@ -254,31 +302,44 @@
             imgData = oCtx.getImageData(0, 0, offCanvas.width, offCanvas.height).data;
         }
 
-        function getBrightness(x, y, p, offW, offH) {
+        function getPixelInfo(x, y, p, offW, offH) {
             const drawW = p.pageW - (p.margin * 2);
             const drawH = p.pageH - (p.margin * 2);
             const px = Math.floor((x / drawW) * offW);
             const py = Math.floor((y / drawH) * offH);
             
-            if (px < 0 || px >= offW || py < 0 || py >= offH) return 255;
+            // Out of bounds = Background
+            if (px < 0 || px >= offW || py < 0 || py >= offH) {
+                return { bright: 255, isBackground: true };
+            }
+
             const i = (py * offW + px) * 4;
             let r = imgData[i], g = imgData[i+1], b = imgData[i+2], a = imgData[i+3];
             
-            // Grayscale conversion
             let bright = (0.299 * r + 0.587 * g + 0.114 * b);
-            if (a < 255) bright = bright * (a/255) + 255 * (1 - a/255); // handle transparency
             
+            // Detect if pixel is considered "Background"
+            let isBackground = (a < 10);
+            if (p.ignoreWhite && r > 240 && g > 240 && b > 240) {
+                isBackground = true;
+            }
+
+            // If drawing over entire page, simulate solid background where transparent
+            if (p.patternArea === 'all' && a < 255) {
+                let bgBright = p.invert ? 0 : 255;
+                bright = bright * (a/255) + bgBright * (1 - a/255);
+            }
+
             if(p.invert) bright = 255 - bright;
-            return bright;
+            
+            return { bright, isBackground };
         }
 
-        // --- Rendering to Live Preview Canvas ---
         function process() {
             if(!originalImage) return;
             const p = getParams();
             sampleImage(p);
 
-            // Screen scale for preview (e.g. 1mm = 3.78px equivalent to 96dpi for display)
             const pxPerMm = 3.78; 
             previewCanvas.width = p.pageW * pxPerMm;
             previewCanvas.height = p.pageH * pxPerMm;
@@ -301,10 +362,15 @@
                     let cx = x + rowOffset;
                     if(cx > drawW) continue;
 
-                    let b = getBrightness(cx, y, p, offW, offH);
-                    if(b < p.threshold) continue;
+                    let { bright, isBackground } = getPixelInfo(cx, y, p, offW, offH);
 
-                    let size = p.fixedSize ? p.maxSize : p.maxSize * (b / 255);
+                    // Area Filtering Rules
+                    if (p.patternArea === 'inside' && isBackground) continue;
+                    if (p.patternArea === 'outside' && !isBackground) continue;
+
+                    if(bright < p.threshold) continue;
+
+                    let size = p.fixedSize ? p.maxSize : p.maxSize * (bright / 255);
                     if (size < 0.1) continue;
                     
                     let r = (size / 2) * pxPerMm;
@@ -353,10 +419,15 @@
                     let cx = x + rowOffset;
                     if(cx > drawW) continue;
 
-                    let b = getBrightness(cx, y, p, offW, offH);
-                    if(b < p.threshold) continue;
+                    let { bright, isBackground } = getPixelInfo(cx, y, p, offW, offH);
 
-                    let size = p.fixedSize ? p.maxSize : p.maxSize * (b / 255);
+                    // Area Filtering Rules
+                    if (p.patternArea === 'inside' && isBackground) continue;
+                    if (p.patternArea === 'outside' && !isBackground) continue;
+
+                    if(bright < p.threshold) continue;
+
+                    let size = p.fixedSize ? p.maxSize : p.maxSize * (bright / 255);
                     if (size < 0.1) continue;
                     let r = size / 2;
 
@@ -394,7 +465,7 @@
         function downloadPNG() {
             if(!originalImage) return alert("Please upload an image first.");
             const p = getParams();
-            const scale = p.dpi / 25.4; // px per mm
+            const scale = p.dpi / 25.4; 
             const wPx = p.pageW * scale;
             const hPx = p.pageH * scale;
 
@@ -458,7 +529,6 @@
             const canvasW = previewCanvas.offsetWidth;
             const canvasH = previewCanvas.offsetHeight;
             
-            // Fit to screen
             zoom = Math.min((containerW - 40) / canvasW, (containerH - 40) / canvasH);
             panX = (containerW - (canvasW * zoom)) / 2;
             panY = (containerH - (canvasH * zoom)) / 2;
@@ -472,9 +542,8 @@
             if (e.deltaY < 0) zoom *= (1 + zoomSpeed);
             else zoom *= (1 - zoomSpeed);
             
-            zoom = Math.max(0.1, Math.min(zoom, 10)); // Limit zoom
+            zoom = Math.max(0.1, Math.min(zoom, 10));
 
-            // Zoom towards mouse position
             const rect = previewArea.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
